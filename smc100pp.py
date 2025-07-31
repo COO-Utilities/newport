@@ -246,7 +246,8 @@ class StageController:
                 self.connected = False
                 ret = {'elaptime': time.time()-start, 'error': ex.strerror}
         # clear socket
-        self.__clear_socket()
+        if self.connected:
+            self.__clear_socket()
 
         return ret
 
