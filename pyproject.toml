@@ -7,7 +7,9 @@ build-backend = "setuptools.build_meta"
 # Basic information about your project.
 name = "newport"
 version = "0.1.0" 
-dependencies = []
+dependencies = [
+    "hardware_device_base@git+https://github.com/COO-Utilities/hardware_device_base#egg=main"
+]
 requires-python = ">=3.7"
 authors = [
   {name = "Don Neill", email = "neill@astro.caltech.edu"}
