@@ -187,17 +187,12 @@ class StageController(HardwareMotionBase):
                 self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 self.socket.connect((host, port))
-                self.logger.info("Connected to %(host)s:%(port)s", {
-                    'host': host,
-                    'port': port
-                })
-                self._set_status((0, f"Connected to {host}:{port}"))
+                self.report_info(f"Connected to {host}:{port}")
                 self._set_connected(True)
 
             except OSError as ex:
                 if ex.errno == errno.EISCONN:
-                    self.logger.info("Already connected")
-                    self._set_status((0, "Already connected"))
+                    self.report_info("Already connected")
                     self._set_connected(True)
                 else:
                     self.report_error(f"Connection error: {ex}")
@@ -311,8 +306,7 @@ class StageController(HardwareMotionBase):
 
             # Invalid state return (done)
             else:
-                self.logger.warning("Bad %dTS return: %s", stage_id, recv)
-                self._set_status((-1, f"Bad {stage_id}TS return: {recv}"))
+                self.report_error(f"Bad {stage_id}TS return: {recv}")
                 return False
 
             # Increment tries and read state again
@@ -321,8 +315,8 @@ class StageController(HardwareMotionBase):
         # If we get here, we ran out of tries
         recv = recv.rstrip()
         code = str(recv[-2:].decode('utf-8'))
-        self.logger.warning("Command timed out, final state: %s",
-                            self.msg.get(code, "Unknown state"))
+        state = self.msg.get(code, 'Unknown state')
+        self.report_error(f"Command timed out, final state: {state}")
         return False
 
     def _send_serial_command(self, stage_id=1, command='') -> bool:
@@ -399,13 +393,11 @@ class StageController(HardwareMotionBase):
         ret = False
         # Do we have a connection?
         if not self.connected:
-            self.logger.warning("Not connected to controller")
-            self._set_status((-1, "Not connected to controller"))
+            self.report_error("Not connected to controller")
 
         # Is stage id valid?
         elif not self._verify_stage_id(stage_id):
-            self.logger.warning("Not a valid stage id: %d", stage_id)
-            self._set_status((-1, f"Not a valid stage id: {stage_id}"))
+            self.report_error(f"Not a valid stage id: {stage_id}")
 
         else:
             # Do we have a legal command?
@@ -498,7 +490,7 @@ class StageController(HardwareMotionBase):
 
         # Return value
         ret = True
-        if not self.homed(stage_id):
+        if not self.is_homed(stage_id):
             if self._send_command(command='OR', stage_id=stage_id):
                 state = ''
                 while 'READY from HOMING' not in state:
@@ -511,12 +503,10 @@ class StageController(HardwareMotionBase):
             else:
                 ret = False
         else:
-            self.logger.info("Already homed")
-            self._set_status((0, "Already homed"))
-
+            self.report_info("Already homed")
         return ret
 
-    def homed(self, stage_id=1):
+    def is_homed(self, stage_id=1):
         """ Is the stage homed?
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :return: Boolean, True if homed else False
@@ -538,7 +528,7 @@ class StageController(HardwareMotionBase):
 
         return ret
 
-    def move_abs(self, position=None, stage_id=None, blocking=False):
+    def move_abs(self, position: float=None, stage_id:int =None, blocking: bool=False) -> bool:
         """
         Move stage to absolute position and return when in position
 
@@ -585,7 +575,7 @@ class StageController(HardwareMotionBase):
                                   f"command to stage {stage_id}")
         return ret
 
-    def move_rel(self, position=None, stage_id=None, blocking=False):
+    def move_rel(self, position: float =None, stage_id: int =None, blocking: bool =False) -> bool:
         """
         Move stage to relative position and return when in position
 
@@ -659,7 +649,7 @@ class StageController(HardwareMotionBase):
 
         return last_error
 
-    def get_pos(self, stage_id=1) -> Union[float, None]:
+    def get_pos(self, stage_id=1) -> Union[float, None]:  # pylint: disable=W0221
         """ Current position
 
         :param stage_id: int, stage position in the daisy chain starting with 1
@@ -674,6 +664,12 @@ class StageController(HardwareMotionBase):
             self.report_error(f"Error reading position from stage {stage_id}")
 
         return position
+
+    def set_pos(self, pos: float, stage: int =1) -> bool:  # pylint: disable=W0221
+        """ Set stage position
+        :param pos: Float, stage position in degrees
+        :param stage: Integer, stage number"""
+        return self.move_abs(position=pos, stage_id=stage)
 
     def get_move_rate(self):
         """ Current move rate
@@ -710,22 +706,24 @@ class StageController(HardwareMotionBase):
         self.report_error(f"Error resetting stage {stage_id}")
         return False
 
-    def get_limits(self, stage_id=1):
+    def get_limits(self):
         """ Get stage limits
-        :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from _send_command
+        :return: Dictionary of stage limits
         """
-        start = time.time()
-        ret = self._send_command(command="SL", parameters="?", stage_id=stage_id)
-        if 'error' not in ret:
-            lolim = int(self._read_reply().rstrip()[3:])
-            ret = self._send_command(command="SR", parameters="?", stage_id=stage_id)
-            if 'error' not in ret:
-                uplim = int(self._read_reply().rstrip()[3:])
-                self.current_limits[stage_id] = (lolim, uplim)
-                ret = {'elaptime': time.time()-start,
-                       'data': self.current_limits[stage_id]}
-        return ret
+        limits = {}
+        for i in range(self.num_stages):
+            if self._send_command(command="SL", parameters="?", stage_id=i+1):
+                lower_limit = int(self._read_reply().rstrip()[3:])
+                if self._send_command(command="SR", parameters="?", stage_id=i+1):
+                    upper_limit = int(self._read_reply().rstrip()[3:])
+                    self.current_limits[i+1] = (lower_limit, upper_limit)
+                    limits[str(i+1)] = (lower_limit, upper_limit)
+                else:
+                    self.report_error(f"Error getting upper limit for stage {i+1}")
+            else:
+                self.report_error(f"Error getting lower limit for stage {i+1}")
+
+        return limits
 
     def get_params(self, stage_id=1, quiet=False):
         """ Get stage parameters
@@ -747,9 +745,9 @@ class StageController(HardwareMotionBase):
 
     def initialize_controller(self):
         """ Initialize stage controller. """
+        _ = self.get_limits()
         for i in range(self.num_stages):
             self.get_pos(i+1)
-            self.get_limits(i+1)
         return True
 
     def read_from_controller(self):
@@ -784,3 +782,15 @@ class StageController(HardwareMotionBase):
                 print(output)
 
             self.logger.debug("End: ")
+
+    # abstract methods that are not used
+    def close_loop(self) -> bool:
+        """ Close servo loop
+        NOTE: this is a stub, since this device is a stepper
+        """
+        return True
+
+    def is_closed_loop(self) -> bool:
+        """ Check if loop is closed
+        NOTE: this is a stub, since this device is a stepper"""
+        return True
