@@ -77,7 +77,7 @@ import time
 import socket
 from typing import Union
 
-from hardware_device_base.hardware_motion_base import HardwareMotionBase
+from hardware_device_base import HardwareMotionBase
 
 
 class StageController(HardwareMotionBase):
@@ -199,7 +199,7 @@ class StageController(HardwareMotionBase):
                     self._set_connected(False)
 
             # clear socket
-            if self.connected:
+            if self.is_connected():
                 self._clear_socket()
         else:
             self.report_error(f"Invalid connection arguments: {host}:{port}")
@@ -480,7 +480,7 @@ class StageController(HardwareMotionBase):
         code = error[-1:]
         return self.error.get(code, "Unknown error")
 
-    def home(self, stage_id=1):
+    def home(self, stage_id=1) -> bool:
         """
         Home the stage
 
@@ -743,7 +743,7 @@ class StageController(HardwareMotionBase):
         self.report_error(f"Error getting params from stage {stage_id}")
         return False
 
-    def initialize_controller(self):
+    def initialize(self) -> bool:
         """ Initialize stage controller. """
         _ = self.get_limits()
         for i in range(self.num_stages):
