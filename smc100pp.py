@@ -168,7 +168,6 @@ class StageController(HardwareMotionBase):
 
         # Set up socket
         self.socket = None
-        self.connected = False
 
         # number of daisy-chained stages
         self.num_stages = num_stages
