@@ -73,14 +73,14 @@ Backlash and hysteresis compensations are disabled.
 """
 
 import errno
-import logging
 import time
 import socket
-import threading
-import sys
+from typing import Union
+
+from hardware_device_base import HardwareMotionBase
 
 
-class StageController:
+class StageController(HardwareMotionBase):
     """
     Controller class for Newport SMC100PP Stage Controller.
     """
@@ -149,8 +149,8 @@ class StageController:
     }
     last_error = ""
 
-    def __init__(self, num_stages=2, move_rate=5.0, log=True,
-                 logfile=None):
+    def __init__(self, num_stages=2, move_rate=5.0,
+                 log: bool =True, logfile: str =__name__.rsplit(".", 1)[-1]):
 
         """
         Class to handle communications with the stage controller and any faults
@@ -164,11 +164,10 @@ class StageController:
         """
 
         # thread lock
-        self.lock = threading.Lock()
+        super().__init__(log, logfile)
 
         # Set up socket
         self.socket = None
-        self.connected = False
 
         # number of daisy-chained stages
         self.num_stages = num_stages
@@ -180,98 +179,50 @@ class StageController:
         self.current_position = [0.0] * (num_stages + 1)
         self.current_limits = [(0., 0.)] * (num_stages + 1)
 
-        # set up logging
-        self.verbose = False
-        if log:
-            if logfile is None:
-                logfile = __name__.rsplit('.', 1)[-1] + '.log'
-            self.logger = logging.getLogger(logfile)
-            self.logger.setLevel(logging.INFO)
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            file_handler = logging.FileHandler(logfile)
-            file_handler.setFormatter(formatter)
-            self.logger.addHandler(file_handler)
+    def connect(self, host, port) -> None: # pylint: disable=W0221
+        """ Connect to stage controller. """
+        if self.validate_connection_params((host, port)):
+            if self.socket is None:
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                self.socket.connect((host, port))
+                self.report_info(f"Connected to {host}:{port}")
+                self._set_connected(True)
 
-            console_formatter = logging.Formatter(
-                '%(asctime)s--%(message)s')
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setFormatter(console_formatter)
-            self.logger.addHandler(console_handler)
+            except OSError as ex:
+                if ex.errno == errno.EISCONN:
+                    self.report_info("Already connected")
+                    self._set_connected(True)
+                else:
+                    self.report_error(f"Connection error: {ex}")
+                    self._set_connected(False)
+
+            # clear socket
+            if self.is_connected():
+                self._clear_socket()
         else:
-            self.logger = None
-
-    def set_verbose(self, verbose=True):
-        """ Set verbose mode.
-
-        :param verbose: Boolean, set to True to enable DEBUG level messages,
-                        False to disable DEBUG level messages
-        """
-        self.verbose = verbose
-        if self.logger:
-            if self.verbose:
-                self.logger.setLevel(logging.DEBUG)
-            else:
-                self.logger.setLevel(logging.INFO)
-
-    def connect(self, host=None, port=None):
-        """ Connect to stage controller.
-
-        :param host: String, host ip address
-        :param port: Int, Port number
-        """
-        start = time.time()
-        if self.socket is None:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            self.socket.connect((host, port))
-            if self.logger:
-                self.logger.debug("Connected to %(host)s:%(port)s", {
-                    'host': host,
-                    'port': port
-                })
-            self.connected = True
-            ret = {'elaptime': time.time()-start, 'data': 'connected'}
-
-        except OSError as ex:
-            if ex.errno == errno.EISCONN:
-                if self.logger:
-                    self.logger.debug("Already connected")
-                self.connected = True
-                ret = {'elaptime': time.time()-start, 'data': 'already connected'}
-            else:
-                if self.logger:
-                    self.logger.error("Connection error: %s", ex.strerror)
-                self.connected = False
-                ret = {'elaptime': time.time()-start, 'error': ex.strerror}
-        # clear socket
-        if self.connected:
-            self.__clear_socket()
-
-        return ret
+            self.report_error(f"Invalid connection arguments: {host}:{port}")
 
     def disconnect(self):
         """ Disconnect stage controller. """
-        start = time.time()
+        if not self.is_connected():
+            self.report_warning("Already disconnected from device")
+            return
         try:
-            self.socket.shutdown(socket.SHUT_RDWR)
-            self.socket.close()
-            self.socket = None
-            if self.logger:
-                self.logger.debug("Disconnected controller")
-            self.connected = False
-            ret = {'elaptime': time.time()-start, 'data': 'disconnected'}
+            self.logger.info("Disconnecting from device")
+            if self.socket:
+                self.socket.shutdown(socket.SHUT_RDWR)
+                self.socket.close()
+                self.socket = None
+            self._set_connected(False)
+            self.report_info("Disconnected controller")
+
         except OSError as ex:
-            if self.logger:
-                self.logger.error("Disconnection error: %s", ex.strerror)
-            self.connected = False
+            self.report_error(f"Disconnection error: {ex}")
+            self._set_connected(False)
             self.socket = None
-            ret = {'elaptime': time.time()-start, 'error': ex.strerror}
 
-        return ret
-
-    def __clear_socket(self):
+    def _clear_socket(self):
         """ Clear socket buffer. """
         if self.socket is not None:
             self.socket.setblocking(False)
@@ -282,23 +233,21 @@ class StageController:
                     break
             self.socket.setblocking(True)
 
-    def __read_value(self):
+    def _read_reply(self):
         """ Read return value from controller """
         # Return value commands
 
         # Get return value
         recv = self.socket.recv(2048)
         recv_len = len(recv)
-        if self.logger:
-            self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
+        self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
 
         # Are we a valid return value?
         if recv_len in [6, 11, 12, 13, 14]:
-            if self.logger:
-                self.logger.debug("Return value validated")
+            self.logger.debug("Return value validated")
         return str(recv.decode('utf-8'))
 
-    def __read_params(self):
+    def _read_params(self):
         """ Read stage controller parameters """
         # Get return value
         recv = self.socket.recv(2048)
@@ -311,15 +260,13 @@ class StageController:
 
         if b'PW0' in recv:
             recv_len = len(recv)
-            if self.logger:
-                self.logger.debug("ZT Return: len = %d", recv_len)
+            self.logger.debug("ZT Return: len = %d", recv_len)
         else:
-            if self.logger:
-                self.logger.warning("ZT command timed out")
+            self.report_warning("ZT command timed out", -1)
 
         return str(recv.decode('utf-8'))
 
-    def __read_blocking(self, stage_id=1, timeout=15):
+    def _read_blocking(self, stage_id=1, timeout=15) -> bool:
         """ Block while reading from the controller.
         :param stage_id: Int, stage id
         :param timeout: Timeout for blocking read
@@ -348,24 +295,18 @@ class StageController:
 
                 # Valid end code or not referenced code (done)
                 if code in self.end_code_list or code in self.not_ref_list:
-                    return {'elaptime': time.time()-start,
-                            'data': self.msg.get(code, 'Unknown state')}
+                    return True
 
                 if print_it >= 10:
                     msg = (f"{time.time()-start:05.2f} "
                            f"{self.msg.get(code, 'Unknown state'):s}")
-                    if self.logger:
-                        self.logger.info(msg)
-                    else:
-                        print(msg)
+                    self.logger.info(msg)
                     print_it = 0
 
             # Invalid state return (done)
             else:
-                if self.logger:
-                    self.logger.warning("Bad %dTS return: %s", stage_id, recv)
-                return {'elaptime': time.time()-start,
-                        'error': str(recv.decode('utf-8'))}
+                self.report_error(f"Bad {stage_id}TS return: {recv}")
+                return False
 
             # Increment tries and read state again
             print_it += 1
@@ -373,86 +314,73 @@ class StageController:
         # If we get here, we ran out of tries
         recv = recv.rstrip()
         code = str(recv[-2:].decode('utf-8'))
-        if self.logger:
-            self.logger.warning("Command timed out, final state: %s",
-                           self.msg.get(code, "Unknown state"))
-        return {'elaptime': time.time()-start,
-                'error': self.msg.get(code, 'Unknown state')}
+        state = self.msg.get(code, 'Unknown state')
+        self.report_error(f"Command timed out, final state: {state}")
+        return False
 
-    def __send_serial_command(self, stage_id=1, cmd=''):
+    def _send_serial_command(self, stage_id=1, command='') -> bool:
         """
         Send serial command to stage controller
 
         :param stage_id: Int, stage position in the daisy chain starting with 1
-        :param cmd: String, command to send to stage controller
-        :return:
+        :param command: String, command to send to stage controller
+        :return: Bool, True if successful, False otherwise
         """
-
-        start = time.time()
-
         # Prep command
-        cmd_send = f"{stage_id}{cmd}\r\n"
-        if self.logger:
-            self.logger.debug("Sending command:%s", cmd_send)
+        cmd_send = f"{stage_id}{command}\r\n"
+        self.logger.debug("Sending command:%s", cmd_send)
         cmd_encoded = cmd_send.encode('utf-8')
 
         # check connection
-        if not self.connected:
-            msg_type = 'error'
-            msg_text = "Not connected to controller!"
-            if self.logger:
-                self.logger.error(msg_text)
+        if self.is_connected():
+            try:
+                self.socket.settimeout(30)
+                # Send command
+                self.socket.send(cmd_encoded)
+                time.sleep(.05)
 
-        try:
-            self.socket.settimeout(30)
-            # Send command
-            self.socket.send(cmd_encoded)
-            time.sleep(.05)
-            msg_type = 'data'
-            msg_text = 'Command sent successfully'
+            except socket.error as ex:
+                self.report_error(f"Socket error: {ex}")
+                return False
+        else:
+            self.report_error("Not connected to stage controller")
+            return False
 
-        except socket.error as ex:
-            msg_type = 'error'
-            msg_text = f"Command send error: {ex.strerror}"
-            if self.logger:
-                self.logger.error(msg_text)
+        return True
 
-        return {'elaptime': time.time()-start, msg_type: msg_text}
-
-    def __send_command(self, cmd="", parameters=None, stage_id=1, custom_command=False):
+    def _send_command(self, command="", parameters=None, stage_id=1, custom_command=False):
         """
         Send a command to the stage controller
 
-        :param cmd: String, command to send to the stage controller
+        :param command: String, command to send to the stage controller
         :param parameters: List of string parameters associated with cmd
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :param custom_command: Boolean, if true, command is custom
         :return:
         """
-
+        # pylint: disable=W0221
         # verify cmd and stage_id
-        ret = self.__verify_send_command(cmd, stage_id, custom_command)
-        if 'error' in ret:
-            return ret
+        if self._verify_send_command(command, stage_id, custom_command):
 
-        # Check if the command should have parameters
-        if cmd in self.parameter_commands and parameters:
-            if self.logger:
+            # Check if the command should have parameters
+            if command in self.parameter_commands and parameters:
                 self.logger.debug("Adding parameters")
-            parameters = [str(x) for x in parameters]
-            parameters = " ".join(parameters)
-            cmd += parameters
+                parameters = [str(x) for x in parameters]
+                parameters = " ".join(parameters)
+                command += parameters
 
-        if self.logger:
-            self.logger.debug("Input command: %s", cmd)
+            self.logger.debug("Input command: %s", command)
 
-        # Send serial command
-        with self.lock:
-            result = self.__send_serial_command(stage_id, cmd)
+            # Send serial command
+            with self.lock:
+                result = self._send_serial_command(stage_id, command)
+        else:
+            self.report_error(f"Command not valid: {command}")
+            result = False
 
         return result
 
-    def __verify_send_command(self, cmd, stage_id, custom_command=False):
+    def _verify_send_command(self, cmd, stage_id, custom_command=False) -> bool:
         """ Verify cmd and stage_id
 
         :param cmd: String, command to send to the stage controller
@@ -460,34 +388,31 @@ class StageController:
         :param custom_command: Boolean, if true, command is custom
         :return: dictionary {'elaptime': time, 'data|error': string_message}"""
 
-        start = time.time()
-
+        # return value
+        ret = False
         # Do we have a connection?
         if not self.connected:
-            msg_type = 'error'
-            msg_text = 'Not connected to controller'
+            self.report_error("Not connected to controller")
 
         # Is stage id valid?
-        elif not self.__verify_stage_id(stage_id):
-            msg_type = 'error'
-            msg_text = f"{stage_id} is not a valid stage"
+        elif not self._verify_stage_id(stage_id):
+            self.report_error(f"Not a valid stage id: {stage_id}")
 
         else:
             # Do we have a legal command?
             if cmd.rstrip().upper() in self.controller_commands:
-                msg_type = 'data'
-                msg_text = f"{cmd} is a valid or custom command"
+                self.logger.debug("Command validated: %s", cmd)
+                ret = True
             else:
                 if not custom_command:
-                    msg_type = 'error'
-                    msg_text = f"{cmd} is not a valid command"
+                    self.report_error(f"Command invalid: {cmd}")
                 else:
-                    msg_type = 'data'
-                    msg_text = f"{cmd} is a custom command"
+                    self.report_info(f"{cmd} is a custom command")
+                    ret = True
 
-        return {'elaptime': time.time() - start, msg_type: msg_text}
+        return ret
 
-    def __verify_stage_id(self, stage_id):
+    def _verify_stage_id(self, stage_id):
         """ Check that the stage id is legal
 
         :param stage_id: Int, stage position in the daisy chain starting with 1
@@ -500,44 +425,37 @@ class StageController:
 
         return is_valid
 
-    def __verify_move_state(self, stage_id, position, move_type='absolute'):
+    def _verify_move_state(self, stage_id, position, move_type='absolute') -> bool:
         """ Verify that the move is allowed
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :param position: String, move position
         :param move_type: String, move type: 'absolute' or 'relative'
         :return: True if move is allowed"""
 
-        start = time.time()
-
-        msg_type = 'data'
-        msg_text = 'OK to move'
+        # Return value
+        ret = False
         # Verify inputs
         if position is None or stage_id is None:
-            msg_type = 'error'
-            msg_text = 'must specify both position and stage_id'
+            self.report_error("Must specify both position and stage_id")
+            current_state = "Unknown"
         else:
             # Verify move state
             current_state = self.get_state(stage_id=stage_id)
-            if 'error' in current_state:
-                msg_type = 'error'
-                msg_text = current_state['error']
-            elif 'READY' not in current_state['data']:
-                msg_type = 'error'
-                msg_text = current_state['data']
+            if 'READY' not in current_state:
+                self.report_error(f"Move not ready for stage {stage_id}")
             else:
                 # Verify position
                 if 'absolute' not in move_type:
                     position += self.current_position[stage_id]
                 if position < self.current_limits[stage_id][0] or \
                    position > self.current_limits[stage_id][1]:
-                    msg_type = 'error'
-                    msg_text = 'position out of range'
-        ret = {'elaptime': time.time() - start, msg_type: msg_text}
-        if self.logger:
-            self.logger.debug("Move state: %s", msg_text)
+                    self.report_error(f"Position out of range: {position}")
+                else:
+                    ret = True
+        self.logger.debug("Move state: %s", current_state)
         return ret
 
-    def __return_parse_state(self, message=""):
+    def _return_parse_state(self, message=""):
         """
         Parse the return message from the controller.  The message code is
         given in the last two string characters
@@ -561,34 +479,33 @@ class StageController:
         code = error[-1:]
         return self.error.get(code, "Unknown error")
 
-    def home(self, stage_id=1):
+    def home(self, stage_id=1) -> bool:
         """
         Home the stage
 
         :param stage_id: Int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
-        if not self.homed(stage_id):
-            ret = self.__send_command(cmd='OR', stage_id=stage_id)
-
-            if 'error' not in ret:
-                while 'READY from HOMING' not in ret['data']:
+        # Return value
+        ret = True
+        if not self.is_homed(stage_id):
+            if self._send_command(command='OR', stage_id=stage_id):
+                state = ''
+                while 'READY from HOMING' not in state:
                     time.sleep(1.)
-                    ret = self.get_state(stage_id)
-                    if 'error' in ret:
+                    state = self.get_state(stage_id)
+                    self.logger.debug(state)
+                    if 'ERROR' in state:
+                        ret = False
                         break
-                    if self.logger:
-                        self.logger.info(ret['data'])
-                ret['elaptime'] = time.time() - start
+            else:
+                ret = False
         else:
-            ret = { 'elaptime': time.time()-start, 'data': 'already homed' }
-
+            self.report_info("Already homed")
         return ret
 
-    def homed(self, stage_id=1):
+    def is_homed(self, stage_id=1):
         """ Is the stage homed?
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :return: Boolean, True if homed else False
@@ -596,125 +513,123 @@ class StageController:
 
         state = self.get_state(stage_id=stage_id)
 
-        if 'error' in state:
-            if self.logger:
-                self.logger.error(state['error'])
+        if 'ERROR' in state:
+            self.report_error(f"Error checking homed stage {stage_id}")
             ret = False
 
         else:
-            if 'NOT REFERENCED' in state['data']:
+            if 'NOT REFERENCED' in state:
                 ret = False
             else:
                 ret = True
 
-            if self.logger:
-                self.logger.debug(state['data'])
+            self.logger.debug(state)
 
         return ret
 
-    def move_abs(self, position=None, stage_id=None, blocking=False):
+    def move_abs(self, position: float=None, stage_id:int =None, blocking: bool=False) -> bool:
         """
         Move stage to absolute position and return when in position
 
         :param position: Float, absolute position in degrees
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :param blocking: Boolean, block until move complete or not
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
+        ret = False
         # Verify we are ready to move
-        ret = self.__verify_move_state(stage_id=stage_id, position=position)
-        if 'error' in ret:
-            if self.logger:
-                self.logger.error(ret['error'])
-            return ret
-        if 'OK to move' not in ret['data']:
-            if self.logger:
-                self.logger.error(ret['data'])
-            return {'elaptime': time.time()-start, 'error': ret['data']}
+        if self._verify_move_state(stage_id=stage_id, position=position):
 
-        # Send move to controller
-        ret = self.__send_command(cmd="PA", parameters=[position],
-                                  stage_id=stage_id)
+            # Command absolute move
+            if self._send_command(command="PA", parameters=[position], stage_id=stage_id):
 
-        if blocking:
-            move_len = self.current_position[stage_id] - position
-            if self.move_rate <= 0:
-                timeout = 5
+                ret = True
+                # Block until finished, if requested
+                if blocking:
+                    # Calculate blocking timeout
+                    move_len = self.current_position[stage_id] - position
+                    if self.move_rate <= 0:
+                        timeout = 5
+                    else:
+                        timeout = int(abs(move_len / self.move_rate))
+                    timeout = max(timeout, 5)
+                    self.report_info(f"Timeout for move to absolute position: {timeout} s")
+                    # Block until move completes or timeout (or other error)
+                    if self._read_blocking(stage_id=stage_id, timeout=timeout):
+                        self.current_position[stage_id] = position
+                    else:
+                        self.report_error("Move to absolute position timed out")
+                        ret = False
+                        # Update current position if success
+                if ret:
+                    self.current_position[stage_id] += position
+            # Sending move command failed
             else:
-                timeout = int(abs(move_len / self.move_rate))
-            timeout = max(timeout, 5)
-            if self.logger:
-                self.logger.info("Timeout for move to absolute position: %d s",
-                                 timeout)
-            ret = self.__read_blocking(stage_id=stage_id, timeout=timeout)
-
-        if 'error' not in ret:
-            self.current_position[stage_id] = position
-
-        ret['elaptime'] = time.time() - start
+                self.report_error(f"Error sending move to {position} "
+                                      f"command to stage {stage_id}")
+            # Verifying move command failed
+        else:
+            self.report_error(f"Error verifying move to {position} "
+                                  f"command to stage {stage_id}")
         return ret
 
-    def move_rel(self, position=None, stage_id=None, blocking=False):
+    def move_rel(self, position: float =None, stage_id: int =None, blocking: bool =False) -> bool:
         """
         Move stage to relative position and return when in position
 
         :param position: Float, relative position in degrees
         :param stage_id: Int, stage position in the daisy chain starting with 1
         :param blocking: Boolean, block until move complete or not
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
+        ret = False
         # Verify we are ready to move
-        ret = self.__verify_move_state(stage_id=stage_id, position=position,
-                                       move_type='relative')
-        if 'error' in ret:
-            if self.logger:
-                self.logger.error(ret['error'])
-            return ret
-        if 'OK to move' not in ret['data']:
-            if self.logger:
-                self.logger.error(ret['data'])
-            return {'elaptime': time.time()-start, 'error': ret['data']}
+        if self._verify_move_state(stage_id=stage_id, position=position,
+                                      move_type='relative'):
+            # Command relative move
+            if self._send_command(command="PR", parameters=[position],
+                                     stage_id=stage_id):
+                ret = True
+                # Block until finished, if requested
+                if blocking:
+                    # Calculate blocking timeout
+                    if self.move_rate <= 0:
+                        timeout = 5
+                    else:
+                        timeout = int(abs(position / self.move_rate))
+                    timeout = max(timeout, 5)
+                    self.logger.info("Timeout for move to relative position: %d s",
+                                         timeout)
+                    # Block until move complete or timeout (or other failure)
+                    if not self._read_blocking(stage_id=stage_id, timeout=timeout):
+                        ret = False
 
-        ret = self.__send_command(cmd="PR", parameters=[position],
-                                  stage_id=stage_id)
-
-        if blocking:
-            if self.move_rate <= 0:
-                timeout = 5
+                # Update current position if success
+                if ret:
+                    self.current_position[stage_id] += position
+            # Sending move command failed
             else:
-                timeout = int(abs(position / self.move_rate))
-            timeout = max(timeout, 5)
-            if self.logger:
-                self.logger.info("Timeout for move to relative position: %d s",
-                                 timeout)
-            ret = self.__read_blocking(stage_id=stage_id, timeout=timeout)
-
-        if 'error' not in ret:
-            self.current_position[stage_id] += position
-
-        ret['elaptime'] = time.time() - start
+                self.report_error(f"Error sending move to {position} "
+                                      f"command to stage {stage_id}")
+        # Verifying move command failed
+        else:
+            self.report_error(f"Error verifying move to {position} "
+                                  f"command to stage {stage_id}")
         return ret
 
-    def get_state(self, stage_id=1):
+    def get_state(self, stage_id=1) -> str:
         """ Current state of the stage
 
         :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
-        ret = self.__send_command(cmd="TS", stage_id=stage_id)
-        if 'error' not in ret:
-            state = self.__return_parse_state(self.__read_value())
-            ret['data'] = state
-            ret['elaptime'] = time.time() - start
+        if self._send_command(command="TS", stage_id=stage_id):
+            ret = self._return_parse_state(self._read_reply())
+        else:
+            ret = "ERROR"
 
         return ret
 
@@ -722,41 +637,43 @@ class StageController:
         """ Last error
 
         :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
+        if self._send_command(command="TE", stage_id=stage_id):
+            last_error = self.__return_parse_error(self._read_reply())
+        else:
+            last_error = "ERROR"
+            self.report_error(f"Error reading last error from stage {stage_id}")
 
-        ret = self.__send_command(cmd="TE", stage_id=stage_id)
-        if 'error' not in ret:
-            last_error = self.__return_parse_error(self.__read_value())
-            ret['data'] = last_error
-            ret['elaptime'] = time.time() - start
+        return last_error
 
-        return ret
-
-    def get_position(self, stage_id=1):
+    def get_pos(self, stage_id=1) -> Union[float, None]:  # pylint: disable=W0221
         """ Current position
 
         :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
-        ret = self.__send_command(cmd="TP", stage_id=stage_id)
-        if 'error' not in ret:
-            position = float(self.__read_value().rstrip()[3:])
+        if self._send_command(command="TP", stage_id=stage_id):
+            position = float(self._read_reply().rstrip()[3:])
             self.current_position[stage_id] = position
-            ret['data'] = position
-            ret['elaptime'] = time.time() - start
+        else:
+            position = None
+            self.report_error(f"Error reading position from stage {stage_id}")
 
-        return ret
+        return position
+
+    def set_pos(self, pos: float, stage: int =1) -> bool:  # pylint: disable=W0221
+        """ Set stage position
+        :param pos: Float, stage position in degrees
+        :param stage: Integer, stage number"""
+        return self.move_abs(position=pos, stage_id=stage)
 
     def get_move_rate(self):
         """ Current move rate
 
-        :return: return from __send_command
+        :return: return from _send_command
         """
         start = time.time()
         return {'elaptime': time.time()-start, 'data': self.move_rate}
@@ -767,79 +684,70 @@ class StageController:
         :param rate: Float, move rate in degrees per second
         :return: dictionary {'elaptime': time, 'data': move_rate}
         """
-        start = time.time()
         if rate > 0:
             self.move_rate = rate
-        else:
-            if self.logger:
-                self.logger.error('set_move_rate input error, not changed')
-        return {'elaptime': time.time()-start, 'data': self.move_rate}
+            return True
+        self.report_error(f"Error setting move rate to {rate}")
+        return False
 
     def reset(self, stage_id=1):
         """ Reset stage
 
         :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
-        ret = self.__send_command(cmd="RS", stage_id=stage_id)
-        time.sleep(2.)
-
-        if 'error' not in ret:
+        if self._send_command(command="RS", stage_id=stage_id):
+            time.sleep(2.)
             self.read_from_controller()
+            return True
 
-        ret['elaptime'] = time.time() - start
-        return ret
+        self.report_error(f"Error resetting stage {stage_id}")
+        return False
 
-    def get_limits(self, stage_id=1):
+    def get_limits(self):
         """ Get stage limits
-        :param stage_id: int, stage position in the daisy chain starting with 1
-        :return: return from __send_command
+        :return: Dictionary of stage limits
         """
-        start = time.time()
-        ret = self.__send_command(cmd="SL", parameters="?", stage_id=stage_id)
-        if 'error' not in ret:
-            lolim = int(self.__read_value().rstrip()[3:])
-            ret = self.__send_command(cmd="SR", parameters="?", stage_id=stage_id)
-            if 'error' not in ret:
-                uplim = int(self.__read_value().rstrip()[3:])
-                self.current_limits[stage_id] = (lolim, uplim)
-                ret = {'elaptime': time.time()-start,
-                       'data': self.current_limits[stage_id]}
-        return ret
+        limits = {}
+        for i in range(self.num_stages):
+            if self._send_command(command="SL", parameters="?", stage_id=i+1):
+                lower_limit = int(self._read_reply().rstrip()[3:])
+                if self._send_command(command="SR", parameters="?", stage_id=i+1):
+                    upper_limit = int(self._read_reply().rstrip()[3:])
+                    self.current_limits[i+1] = (lower_limit, upper_limit)
+                    limits[str(i+1)] = (lower_limit, upper_limit)
+                else:
+                    self.report_error(f"Error getting upper limit for stage {i+1}")
+            else:
+                self.report_error(f"Error getting lower limit for stage {i+1}")
+
+        return limits
 
     def get_params(self, stage_id=1, quiet=False):
         """ Get stage parameters
 
         :param stage_id: int, stage position in the daisy chain starting with 1
         :param quiet: Boolean, do not print parameters
-        :return: return from __send_command
+        :return: return from _send_command
         """
 
-        start = time.time()
-
-        ret = self.__send_command(cmd="ZT", stage_id=stage_id)
-
-        if 'error' not in ret:
-            params = self.__read_params()
+        if self._send_command(command="ZT", stage_id=stage_id):
+            params = self._read_params()
             if not quiet:
                 for param in params.split():
                     if 'PW' not in param:
                         print(param)
-            ret['data'] = params
-            ret['elaptime'] = time.time() - start
+            return True
+        self.report_error(f"Error getting params from stage {stage_id}")
+        return False
 
-        return ret
-
-    def initialize_controller(self):
+    def initialize(self) -> bool:
         """ Initialize stage controller. """
-        start = time.time()
+        _ = self.get_limits()
         for i in range(self.num_stages):
-            self.get_position(i+1)
-            self.get_limits(i+1)
-        return {'elaptime': time.time()-start, 'data': 'initialized'}
+            self.get_pos(i+1)
+        return True
 
     def read_from_controller(self):
         """ Read from controller"""
@@ -847,8 +755,7 @@ class StageController:
         try:
             recv = self.socket.recv(2048)
             recv_len = len(recv)
-            if self.logger:
-                self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
+            self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
         except BlockingIOError:
             recv = b""
         self.socket.setblocking(True)
@@ -868,11 +775,21 @@ class StageController:
             if not cmd:
                 break
 
-            ret = self.__send_command(cmd=cmd, stage_id=stage_id,
-                                      custom_command=True)
-            if 'error' not in ret:
+            if self._send_command(command=cmd, stage_id=stage_id,
+                                     custom_command=True):
                 output = self.read_from_controller()
                 print(output)
 
-            if self.logger:
-                self.logger.debug("End: %s", ret)
+            self.logger.debug("End: ")
+
+    # abstract methods that are not used
+    def close_loop(self) -> bool:
+        """ Close servo loop
+        NOTE: this is a stub, since this device is a stepper
+        """
+        return True
+
+    def is_loop_closed(self) -> bool:
+        """ Check if loop is closed
+        NOTE: this is a stub, since this device is a stepper"""
+        return True
