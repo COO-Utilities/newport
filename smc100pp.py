@@ -789,7 +789,7 @@ class StageController(HardwareMotionBase):
         """
         return True
 
-    def is_closed_loop(self) -> bool:
+    def is_loop_closed(self) -> bool:
         """ Check if loop is closed
         NOTE: this is a stub, since this device is a stepper"""
         return True
