@@ -209,7 +209,7 @@ class StageController(HardwareMotionBase):
             self.report_warning("Already disconnected from device")
             return
         try:
-            self.logger.info("Disconnecting from device")
+            self.report_info("Disconnecting from device")
             if self.socket:
                 self.socket.shutdown(socket.SHUT_RDWR)
                 self.socket.close()
@@ -240,11 +240,11 @@ class StageController(HardwareMotionBase):
         # Get return value
         recv = self.socket.recv(2048)
         recv_len = len(recv)
-        self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
+        self.report_debug(f"Return: len = {recv_len}, Value = {recv}")
 
         # Are we a valid return value?
         if recv_len in [6, 11, 12, 13, 14]:
-            self.logger.debug("Return value validated")
+            self.report_debug("Return value validated")
         return str(recv.decode('utf-8'))
 
     def _read_params(self):
@@ -260,7 +260,7 @@ class StageController(HardwareMotionBase):
 
         if b'PW0' in recv:
             recv_len = len(recv)
-            self.logger.debug("ZT Return: len = %d", recv_len)
+            self.report_debug(f"ZT Return: len = {recv_len}")
         else:
             self.report_warning("ZT command timed out", -1)
 
@@ -328,7 +328,7 @@ class StageController(HardwareMotionBase):
         """
         # Prep command
         cmd_send = f"{stage_id}{command}\r\n"
-        self.logger.debug("Sending command:%s", cmd_send)
+        self.report_debug(f"Sending command:{cmd_send}")
         cmd_encoded = cmd_send.encode('utf-8')
 
         # check connection
@@ -364,12 +364,12 @@ class StageController(HardwareMotionBase):
 
             # Check if the command should have parameters
             if command in self.parameter_commands and parameters:
-                self.logger.debug("Adding parameters")
+                self.report_debug("Adding parameters")
                 parameters = [str(x) for x in parameters]
                 parameters = " ".join(parameters)
                 command += parameters
 
-            self.logger.debug("Input command: %s", command)
+            self.report_debug(f"Input command: {command}")
 
             # Send serial command
             with self.lock:
@@ -401,7 +401,7 @@ class StageController(HardwareMotionBase):
         else:
             # Do we have a legal command?
             if cmd.rstrip().upper() in self.controller_commands:
-                self.logger.debug("Command validated: %s", cmd)
+                self.report_debug(f"Command validated: {cmd}")
                 ret = True
             else:
                 if not custom_command:
@@ -452,7 +452,7 @@ class StageController(HardwareMotionBase):
                     self.report_error(f"Position out of range: {position}")
                 else:
                     ret = True
-        self.logger.debug("Move state: %s", current_state)
+        self.report_debug(f"Move state: {current_state}")
         return ret
 
     def _return_parse_state(self, message=""):
@@ -495,7 +495,7 @@ class StageController(HardwareMotionBase):
                 while 'READY from HOMING' not in state:
                     time.sleep(1.)
                     state = self.get_state(stage_id)
-                    self.logger.debug(state)
+                    self.report_debug(state)
                     if 'ERROR' in state:
                         ret = False
                         break
@@ -523,7 +523,7 @@ class StageController(HardwareMotionBase):
             else:
                 ret = True
 
-            self.logger.debug(state)
+            self.report_debug(state)
 
         return ret
 
@@ -755,7 +755,7 @@ class StageController(HardwareMotionBase):
         try:
             recv = self.socket.recv(2048)
             recv_len = len(recv)
-            self.logger.debug("Return: len = %d, Value = %s", recv_len, recv)
+            self.report_debug(f"Return: len = {recv_len}, Value = {recv}")
         except BlockingIOError:
             recv = b""
         self.socket.setblocking(True)
@@ -780,7 +780,7 @@ class StageController(HardwareMotionBase):
                 output = self.read_from_controller()
                 print(output)
 
-            self.logger.debug("End: ")
+            self.report_debug("End: ")
 
     # abstract methods that are not used
     def close_loop(self) -> bool:
