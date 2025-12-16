@@ -747,7 +747,8 @@ class StageController(HardwareMotionBase):
         _ = self.get_limits()
         for i in range(self.num_stages):
             self.get_pos(i+1)
-        return True
+        self.initialized = True
+        return self.initialized
 
     def read_from_controller(self):
         """ Read from controller"""
