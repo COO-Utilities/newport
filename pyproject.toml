@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 name = "newport"
 version = "0.1.0" 
 dependencies = [
-    "hardware_device_base@git+https://github.com/COO-Utilities/hardware_device_base#egg=main"
+    "hardware_device_base@git+https://github.com/COO-Utilities/hardware_device_base@v1.0.0"
 ]
 requires-python = ">=3.7"
 authors = [
