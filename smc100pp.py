@@ -479,31 +479,31 @@ class StageController(HardwareMotionBase):
         code = error[-1:]
         return self.error.get(code, "Unknown error")
 
-    def home(self, stage_id=1, override: bool =False) -> bool:
+    def home(self, stage_id=1) -> bool:
         """
         Home the stage
 
         :param stage_id: Int, stage position in the daisy chain starting with 1
-        :param override: Boolean, if true, override the is_homed check
         :return: return from _send_command
         """
 
         # Return value
         ret = True
-        if not self.is_homed(stage_id) or override:
-            if self._send_command(command='OR', stage_id=stage_id):
-                state = ''
-                while 'READY from HOMING' not in state:
-                    time.sleep(1.)
-                    state = self.get_state(stage_id)
-                    self.report_debug(state)
-                    if 'ERROR' in state:
-                        ret = False
-                        break
-            else:
-                ret = False
+        if self.is_homed(stage_id):
+            self.report_info("Already homed, homing anyway")
+
+        if self._send_command(command='OR', stage_id=stage_id):
+            state = ''
+            while 'READY from HOMING' not in state:
+                time.sleep(1.)
+                state = self.get_state(stage_id)
+                self.report_debug(state)
+                if 'ERROR' in state:
+                    ret = False
+                    break
         else:
-            self.report_info("Already homed")
+            ret = False
+
         return ret
 
     def is_homed(self, stage_id=1):
