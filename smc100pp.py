@@ -75,7 +75,7 @@ Backlash and hysteresis compensations are disabled.
 import errno
 import time
 import socket
-from typing import Union
+from typing import Optional, Union
 
 from hardware_device_base import HardwareMotionBase
 
@@ -233,7 +233,7 @@ class StageController(HardwareMotionBase):
                     break
             self.socket.setblocking(True)
 
-    def _read_reply(self):
+    def _read_reply(self) -> str:
         """ Read return value from controller """
         # Return value commands
 
@@ -247,7 +247,7 @@ class StageController(HardwareMotionBase):
             self.report_debug("Return value validated")
         return str(recv.decode('utf-8'))
 
-    def _read_params(self):
+    def _read_params(self) -> str:
         """ Read stage controller parameters """
         # Get return value
         recv = self.socket.recv(2048)
@@ -278,7 +278,7 @@ class StageController(HardwareMotionBase):
         sleep_time = 0.1
         start_time = time.time()
         print_it = 0
-        recv = None
+        recv = b''
         while time.time() - start_time < timeout:
             # Check state
             statecmd = f'{stage_id}TS\r\n'
@@ -300,7 +300,7 @@ class StageController(HardwareMotionBase):
                 if print_it >= 10:
                     msg = (f"{time.time()-start:05.2f} "
                            f"{self.msg.get(code, 'Unknown state'):s}")
-                    self.logger.info(msg)
+                    self.report_info(msg)
                     print_it = 0
 
             # Invalid state return (done)
@@ -479,11 +479,12 @@ class StageController(HardwareMotionBase):
         code = error[-1:]
         return self.error.get(code, "Unknown error")
 
-    def home(self, stage_id=1) -> bool:
+    def home(self, stage_id=1, timeout :int = 10) -> bool:
         """
         Home the stage
 
         :param stage_id: Int, stage position in the daisy chain starting with 1
+        :param timeout: Int, timeout in seconds
         :return: return from _send_command
         """
 
@@ -494,12 +495,18 @@ class StageController(HardwareMotionBase):
 
         if self._send_command(command='OR', stage_id=stage_id):
             state = ''
+            tries = 0
             while 'READY from HOMING' not in state:
                 time.sleep(1.)
                 state = self.get_state(stage_id)
                 self.report_debug(state)
                 if 'ERROR' in state:
                     ret = False
+                    break
+                tries += 1
+                if tries >= timeout:
+                    ret = False
+                    self.report_error(f"Homing stage {stage_id} timed out > {timeout}s")
                     break
         else:
             ret = False
@@ -528,7 +535,8 @@ class StageController(HardwareMotionBase):
 
         return ret
 
-    def move_abs(self, position: float=None, stage_id:int =None, blocking: bool=False) -> bool:
+    def move_abs(self, position: Optional[float] = None, stage_id: Optional[int] = None,
+                 blocking: bool = False) -> bool:
         """
         Move stage to absolute position and return when in position
 
@@ -539,6 +547,11 @@ class StageController(HardwareMotionBase):
         """
 
         ret = False
+        # Verify inputs
+        if position is None or stage_id is None:
+            self.report_error("Must specify both position and stage_id")
+            return ret
+
         # Verify we are ready to move
         if self._verify_move_state(stage_id=stage_id, position=position):
 
@@ -557,14 +570,13 @@ class StageController(HardwareMotionBase):
                     timeout = max(timeout, 5)
                     self.report_info(f"Timeout for move to absolute position: {timeout} s")
                     # Block until move completes or timeout (or other error)
-                    if self._read_blocking(stage_id=stage_id, timeout=timeout):
-                        self.current_position[stage_id] = position
-                    else:
+                    if not self._read_blocking(stage_id=stage_id, timeout=timeout):
                         self.report_error("Move to absolute position timed out")
                         ret = False
-                        # Update current position if success
+
+                # Update current position if success
                 if ret:
-                    self.current_position[stage_id] += position
+                    self.current_position[stage_id] = position
             # Sending move command failed
             else:
                 self.report_error(f"Error sending move to {position} "
@@ -575,7 +587,8 @@ class StageController(HardwareMotionBase):
                                   f"command to stage {stage_id}")
         return ret
 
-    def move_rel(self, position: float =None, stage_id: int =None, blocking: bool =False) -> bool:
+    def move_rel(self, position: Optional[float] = None, stage_id: Optional[int] = None,
+                 blocking: bool = False) -> bool:
         """
         Move stage to relative position and return when in position
 
@@ -586,6 +599,11 @@ class StageController(HardwareMotionBase):
         """
 
         ret = False
+        # Verify inputs
+        if position is None or stage_id is None:
+            self.report_error("Must specify both position and stage_id")
+            return ret
+
         # Verify we are ready to move
         if self._verify_move_state(stage_id=stage_id, position=position,
                                       move_type='relative'):
@@ -601,8 +619,7 @@ class StageController(HardwareMotionBase):
                     else:
                         timeout = int(abs(position / self.move_rate))
                     timeout = max(timeout, 5)
-                    self.logger.info("Timeout for move to relative position: %d s",
-                                         timeout)
+                    self.report_info(f"Timeout for move to relative position: {timeout} s")
                     # Block until move complete or timeout (or other failure)
                     if not self._read_blocking(stage_id=stage_id, timeout=timeout):
                         ret = False
@@ -751,7 +768,7 @@ class StageController(HardwareMotionBase):
         self.initialized = True
         return self.initialized
 
-    def read_from_controller(self):
+    def read_from_controller(self) -> str:
         """ Read from controller"""
         self.socket.setblocking(False)
         try:
