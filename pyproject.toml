@@ -1,6 +1,6 @@
 [build-system]
 # Specifies the build system to use. 
-requires = ["setuptools>=42"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -20,7 +20,7 @@ maintainers = [
 ]
 description = "Newport controller software"
 readme = "README.md" 
-license = { text = "MIT" }
+license = "MIT"
 # keywords = ["example", "package", "keywords"]
 classifiers = [
   "Programming Language :: Python"
@@ -45,6 +45,9 @@ dev = [
   "black",
   "flake8"
 ]
+[tool.setuptools]
+py-modules = ["smc100pp", "cornerstone260"]
+
 [tool.pytest.ini_options]
 pythonpath = [
     "."
