@@ -39,7 +39,7 @@ SC    Set/Get control loop state Not for PP
 SE    Configure/Execute simultaneous started move
 SL  * Set/Get negative software limit
 SR  * Set/Get positive software limit
-ST    Stop motion
+ST  * Stop motion
 SU    Set/Get encoder increment value Not for PP
 TB    Get command error string
 TE  * Get last command error
@@ -92,6 +92,7 @@ class StageController(HardwareMotionBase):
                            "RS",    # Reset controller
                            "SL",    # Set/Get positive software limit
                            "SR",    # Set/Get negative software limit
+                           "ST",    # Stop motion
                            "TE",    # Get last command error
                            "TP",    # Get current position
                            "TS",    # Get positioner error and controller state
@@ -635,6 +636,20 @@ class StageController(HardwareMotionBase):
         else:
             self.report_error(f"Error verifying move to {position} "
                                   f"command to stage {stage_id}")
+        return ret
+
+    def stop(self, stage_id=1) -> str:
+        """ Stop any motion of the stage
+
+        :param stage_id: int, stage position in the daisy chain starting with 1
+        :return: return from _send_command
+        """
+
+        if self._send_command(command="ST", stage_id=stage_id):
+            ret = self._return_parse_state(self._read_reply())
+        else:
+            ret = "ERROR"
+
         return ret
 
     def get_state(self, stage_id=1) -> str:
